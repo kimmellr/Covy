@@ -41,6 +41,16 @@ void turnMotor(int dir);
 // these variables keep track of which motors are running
 bool motor_running = false;
 
+void check_motor_status(){
+  if (((sendData(0x35, 0)&0x200)==0)&&((sendData(0x35,0)&0x40)==0)) {
+    //everyting is normal
+  }
+  else {
+    stopMotor();
+    Serial.println("[close complete]");
+  }
+}
+
 void move_close(){
   
   digitalWrite(ENABLE_PIN,LOW);       // enable the TMC5130
@@ -80,14 +90,17 @@ void move_close(){
   
   motor_running = true;
 
-    while(((sendData(0x35, 0)&0x200)==0)&&((sendData(0x35,0)&0x40)==0)){   // wait for position_reached flag OR a STALL EVENT
-    delayMicroseconds(500);  // shortened the delay to make the following if statement more sensitive
-  }
+  //   while(((sendData(0x35, 0)&0x200)==0)&&((sendData(0x35,0)&0x40)==0)){   // wait for position_reached flag OR a STALL EVENT
+  //   delayMicroseconds(500);  // shortened the delay to make the following if statement more sensitive
+  // }
 
-  stopMotor();
-  digitalWrite(ENABLE_PIN,HIGH);
-  Serial.println("[close complete]");
+  // stopMotor();
+  // digitalWrite(ENABLE_PIN,HIGH);
+  // Serial.println("[close complete]");
 }
+
+
+
 
 void move_open(){
 
@@ -128,7 +141,7 @@ void move_open(){
   
   motor_running = true;
 
-    while(((sendData(0x35, 0)&0x200)==0)&&((sendData(0x35,0)&0x40)==0)){   // wait for position_reached flag OR a STALL EVENT
+  while(((sendData(0x35, 0)&0x200)==0)&&((sendData(0x35,0)&0x40)==0)){   // wait for position_reached flag OR a STALL EVENT
     delayMicroseconds(500);  // shortened the delay to make the following if statement more sensitive
   }
 
@@ -141,7 +154,8 @@ void move_open(){
 // this function disables the TMC5130
 //  Under no circumstance does it enable the driver, this is done elsewhere!
 void opt_motors(){
-  if(!(motor_running))digitalWrite(ENABLE_PIN,HIGH);
+  if (!(motor_running)) 
+    {digitalWrite(ENABLE_PIN,HIGH);}
 }
 
 // gracefully stops motor and handles background optimizations
