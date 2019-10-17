@@ -59,7 +59,7 @@ void MotorControl::move_close()
 int MotorControl::get_position()
 {
   unsigned long xactual;
-  xactual = sendData(0x21 + 0x80, 0); // Get the current Position
+  xactual = sendData(0x21, 0); // Get the current Position
   return xactual;
 }
 
@@ -247,6 +247,6 @@ void MotorControl::move()
   sendData(0x35, 0);
   sendData(0x34 + 0x80, 0x400); // Enable stallguard
 
-  sendData(0xAD, -_travel); //XTARGET: Positive makes it move right
+  sendData(0x2D+  0x80, -_travel); //XTARGET: Positive makes it move right
   sendData(0xA1, 0);        // set XACTUAL to zero
 }

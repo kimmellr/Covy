@@ -1,11 +1,10 @@
 #ifndef Motor_control
 #define Motor_control
 #include "Arduino.h"
-#include "current_conversion.h"
 
 class MotorControl
 {
-  int _stallguard;
+  int _stallguard;        // -64 to 64 A higher value makes stallGuard2 less sensitive and requires more torque to indicate a stall.
   long _travel; // in inches
   long _velocity;
   bool _motor_running;
