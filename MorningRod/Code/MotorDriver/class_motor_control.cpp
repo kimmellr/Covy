@@ -1,9 +1,8 @@
- #include "Arduino.h"
+#include "Arduino.h"
 //#include "esphome.h"
 #include "SPI.h"
 #include "class_motor_control.h"
 //#include "pins.h"
-
 
 MotorControl::MotorControl()
 {
@@ -25,7 +24,8 @@ void MotorControl::setup_pins(int chipCS)
 }
 void MotorControl::move_position(float position)
 {
-  _requested_position = position;
+  long steps = to_steps( position * _travel);
+  _requested_position = steps;
   long new_travel = (position - _absolute_position) / _travel;
   auto m = Movement(_current_open, _velocity, -new_travel, _stallguard, _chipCS);
   m.move();
@@ -33,8 +33,8 @@ void MotorControl::move_position(float position)
 }
 void MotorControl::move_open()
 {
-  _requested_position = 1.0;
-  auto m = Movement(_current_open, _velocity, -_travel, _stallguard, _chipCS);
+  _requested_position = 0.0
+  auto m = Movement(_current_open, _velocity, -_absolute_position, _stallguard, _chipCS);
   digitalWrite(ENABLE_PIN, LOW); // enable the TMC5130
   m.move();
   _full_close = false;
@@ -44,8 +44,9 @@ void MotorControl::move_open()
 
 void MotorControl::move_close()
 {
-  _requested_position = 0.0;
-  auto m = Movement(_current_close, _velocity, _travel, _stallguard, _chipCS);
+  _requested_position = to_steps(_travel);
+  long steps = _requested_position - _absolute_position;
+  auto m = Movement(_current_close, _velocity, steps, _stallguard, _chipCS);
   digitalWrite(ENABLE_PIN, LOW); // enable the TMC5130
   m.move();
   _full_close = true;
@@ -53,11 +54,12 @@ void MotorControl::move_close()
   _motor_running = true;
 }
 
-//int MotorControl::get_position()
-//{
-//  unsigned long xactual;
-//  xactual = sendData(0x21 + 0x80, 0); // Get the current Position
-//}
+int MotorControl::get_position()
+{
+  unsigned long xactual;
+  xactual = sendData(0x21 + 0x80, 0); // Get the current Position
+  return xactual;
+}
 
 void MotorControl::move_stop()
 {
@@ -71,7 +73,7 @@ void MotorControl::move_stop()
   sendData(0x2D + 0x80, 0);         //
   sendData(0x23 + 0x80, 0x180);     // fix VMAX and VSTART to previous values so motor can run again
   sendData(0x27 + 0x80, _velocity); //
-  digitalWrite(ENABLE_PIN, HIGH);  // disable the motor driver if possible
+  digitalWrite(ENABLE_PIN, HIGH);   // disable the motor driver if possible
   _motor_running = false;
 }
 void MotorControl::check_stall()
@@ -84,24 +86,32 @@ void MotorControl::check_stall()
   else if ((sendData(0x35, 0) & 0x40) == 1)
   {
     //Stalled
-    if (abs(_absolute_position - _requested_position) < 0.1)
+    if (abs(get_position() - _requested_position) < 100) //Within 100 steps
     { // Stalled close to the end
 
       if (_full_close)
       {
-        // TODO: Update travel
-        _absolute_position = 1.0;
+        _absolute_position = get_position() + _absolute_position;  // Absolute position was the starting point, plus the current position
+        _travel = to_inches(_absolute_position); //Update the travel position.  This is probably the truth
+        move_stop();
       }
       else if (_full_open)
       {
-        _absolute_position = 0.0;
-                             // Likely lost some steps somewhere
+        _absolute_position = 0;
+        // Likely lost some steps somewhere
+        move_stop();
       }
+    } 
+    else
+    {
+      move_stop(); // True stall
+      _absolute_position = get_position() + _absolute_position;  // Best guess on where we are
     }
+    
   }
   else
   {
-    move_stop();
+    //Still moing along
   }
 }
 void MotorControl::setup_motors()
@@ -144,6 +154,16 @@ void MotorControl::setup_motors()
 
   this->move_stop();
 }
+long MotorControl::to_steps(float inches)
+{
+  long steps = long(inches * STEPS_PER_INCH);
+  return steps;
+}
+float MotorControl::to_inches(long steps)
+{
+  float inches = float(steps / STEPS_PER_INCH);
+  return inches;
+}
 unsigned long MotorControl::sendData(unsigned long address, unsigned long datagram)
 {
   //TMC5130 takes 40 bits of data: 8 address and 32 data
@@ -159,7 +179,7 @@ unsigned long MotorControl::sendData(unsigned long address, unsigned long datagr
   i_datagram <<= 8;
   i_datagram |= SPI.transfer((datagram >> 8) & 0xff);
   i_datagram <<= 8;
-  i_datagram |= SPI.transfer((datagram) & 0xff);
+  i_datagram |= SPI.transfer((datagram)&0xff);
   digitalWrite(_chipCS, HIGH);
   return i_datagram;
 }
@@ -179,7 +199,7 @@ unsigned long Movement::sendData(unsigned long address, unsigned long datagram)
   i_datagram <<= 8;
   i_datagram |= SPI.transfer((datagram >> 8) & 0xff);
   i_datagram <<= 8;
-  i_datagram |= SPI.transfer((datagram) & 0xff);
+  i_datagram |= SPI.transfer((datagram)&0xff);
   digitalWrite(_chipCS, HIGH);
   return i_datagram;
 }
