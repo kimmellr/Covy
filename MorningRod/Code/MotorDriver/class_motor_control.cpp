@@ -8,6 +8,8 @@ MotorControl::MotorControl()
 {
   _motor_running = false;
   _absolute_position = 0;
+  _Vfs = 0.325;
+  _Rsense = 0.075;
 }
 
 void MotorControl::Begin(int stallguard, long travel, long velocity, long current_open, long current_close)
@@ -184,39 +186,42 @@ unsigned long MotorControl::sendData(unsigned long address, unsigned long datagr
   return i_datagram;
 }
 
-unsigned long Movement::sendData(unsigned long address, unsigned long datagram)
+int MotorControl::current_to_command(float current)
 {
-  //TMC5130 takes 40 bits of data: 8 address and 32 data
-  delay(10);
-  uint8_t stat;
-  unsigned long i_datagram = 0;
-  digitalWrite(_chipCS, LOW);
-  delayMicroseconds(10);
-  stat = SPI.transfer(address);
-  i_datagram |= SPI.transfer((datagram >> 24) & 0xff);
-  i_datagram <<= 8;
-  i_datagram |= SPI.transfer((datagram >> 16) & 0xff);
-  i_datagram <<= 8;
-  i_datagram |= SPI.transfer((datagram >> 8) & 0xff);
-  i_datagram <<= 8;
-  i_datagram |= SPI.transfer((datagram)&0xff);
-  digitalWrite(_chipCS, HIGH);
-  return i_datagram;
-}
-Movement::Movement(unsigned long current, long velocity, long travel, long stallguard, int chipCS)
-{
-  _current = current;
-  _velocity = velocity;
-  _travel = travel;
-  _stallguard = stallguard;
+
+    // Calculate the CS Value
+    int cs = -1 * ((-1600 * current * _Rsense - 32 * current + 25 * sqrt(2) * _Vfs) /
+              (25 * sqrt(2) * _Vfs));
+
+    // Build the command string in binary
+    String part1 = "0001000";
+    String part2 = "";
+    for (int k = 0; k <= 4; k++)
+    {
+        int b = (cs & (1 << k)) >> k; //get k-th bit of cs
+        part2 = String(b) + part2;
+    };
+    String part3 = "00000000";
+    String command_string = part1 + part2 + part3;
+
+    // Convert the binary to integer
+    int value = 0;
+    int len = command_string.length();
+    for (int i = 0; i < len; i++) // for every character in the string
+    {
+        value *= 2; // double the result so far
+        if (command_string[i] == '1')
+            value++; //add 1 if needed
+    }
+    return value;
 }
 
-void Movement::move()
+void MotorControl::move()
 {
   //Move Code  assumes driver is enabled
   //SPI Commands using _current, _velocity, _travel
   //default _current = 0x00010A00
-  sendData(0x10 + 0x80, _current); // 13 = 1.06A current for open function
+  sendData(0x10 + 0x80, current_to_command(_current)); // 13 = 1.06A current for open function
   sendData(0xA0, 0x00000000);      //RAMPMODE=0
 
   sendData(0x14 + 0x80, _velocity - 1); // VCOOLTHRS: This value disable stallGuard below a certain velocity to prevent premature stall
