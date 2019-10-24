@@ -105,6 +105,8 @@ int last_dir; // last direction the motors moved
 
 void publish_config()
 {
+    bool publish_v;
+    DEBUG_STREAM.println("MQTT Publish Config");
     const size_t capacity = JSON_OBJECT_SIZE(512);
 
     DynamicJsonDocument doc(capacity);
@@ -119,11 +121,14 @@ void publish_config()
     char docbuffer[512];
     size_t n = serializeJson(doc, docbuffer);
     DEBUG_STREAM.println(docbuffer);
-    mqtt_client.publish(mqtt_config_topic.c_str(), docbuffer, true);
+    publish_v = mqtt_client.publish(mqtt_config_topic.c_str(), docbuffer, true);
+    DEBUG_STREAM.print("Publish Return: ");
+    DEBUG_STREAM.println(publish_v);
 };
 
 boolean mqtt_reconnect() {
-  if (mqtt_client.connect(device_name.c_str(), "mqtt_login", "F7ycM93*357S")) {
+  bool connect_value;
+  if (mqtt_client.connect("aabbccdd", "mqtt_login", "F7ycM93*357S")) {
     // Once connected, publish an announcement...
     publish_config();
     // ... and resubscribe
@@ -155,37 +160,23 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
     }
 }
 
-void setup_mqtt(String mqtt_user, String mqtt_password, String mqtt_server, String mqtt_port, String device_name)
-{
-    DEBUG_STREAM.print("Setup MQTT ");
-    String base_topic = "homeassistant";
-    base_topic = base_topic + "/cover/" + device_name;
-    mqtt_set_topic = base_topic + "/set";
-    mqtt_config_topic = base_topic + "/config";
-    mqtt_state_topic = base_topic + "/state";
+// void setup_mqtt(String mqtt_user, String mqtt_password, String mqtt_server, String mqtt_port, String device_name)
+// {
+//     DEBUG_STREAM.print("Setup MQTT ");
+//     String base_topic = "homeassistant";
+//     base_topic = base_topic + "/cover/" + device_name;
+//     mqtt_set_topic = base_topic + "/set";
+//     mqtt_config_topic = base_topic + "/config";
+//     mqtt_state_topic = base_topic + "/state";
 
-    mqtt_client.setServer(mqtt_server.c_str(), mqtt_port.toInt());
-    mqtt_client.setCallback(mqtt_callback);
-};
+//     mqtt_client.setServer(mqtt_server.c_str(), mqtt_port.toInt());
+//     mqtt_client.setCallback(mqtt_callback);
+// };
 
 
 void IndependentTask( void * parameter ) {
   // the internet should not be used AT ALL in this function!!!!
 while(true) {
-  if (!mqtt_client.connected()) {
-    long now = millis();
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;
-      // Attempt to reconnect
-      if (mqtt_reconnect()) {
-        lastReconnectAttempt = 0;
-      }
-    }
-  } else {
-    // Client connected
-
-    mqtt_client.loop();
-  }
     // buttons
 
     // A press sets the command to open or close the track motor.
@@ -272,7 +263,8 @@ void setup() {
 
   clockout_setup();
   setup_motors();
-   
+  mqtt_client.setServer("192.168.86.23", 1883);
+  mqtt_client.setCallback(mqtt_callback);
   xTaskCreatePinnedToCore(
    IndependentTask,                  /* pvTaskCode */
    "NoBlynkSafe",            /* pcName */
@@ -310,6 +302,23 @@ void loop() {
   // This handles the network and cloud connection
   BlynkProvisioning.run();
   
+
+  if (!mqtt_client.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      DEBUG_STREAM.println("Trying to Mqtt Connect");
+      lastReconnectAttempt = now;
+      // Attempt to reconnect
+      if (mqtt_reconnect()) {
+        lastReconnectAttempt = 0;
+      }
+    }
+  } else {
+    // Client connected
+
+    mqtt_client.loop();
+  }
+
   // check if the direction changed
   if(preferences.getChar("last_dir",-1)!=last_dir){
     preferences.putChar("last_dir",last_dir);
