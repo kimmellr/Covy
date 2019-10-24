@@ -23,6 +23,9 @@
 #include "driver/timer.h"
 #include <Update.h>
 
+//MQTT
+#include <PubSubClient.h>
+
 //#define DEBUG_STREAM terminal
 #define DEBUG_STREAM Serial
 
@@ -44,7 +47,218 @@ const char* ntpServer = "pool.ntp.org"; // where to get the current date and tim
 
 String sunsetsunrisebaseurl="https://api.sunrise-sunset.org/json?formatted=0&lng=";
 
+// Initiate the object
+String mqtt_user;
+String mqtt_password;
+String mqtt_server;
+String mqtt_port;
+String device_name;
+String mqtt_state_topic;
+String mqtt_set_topic;
+String mqtt_config_topic;
+long lastReconnectAttempt = 0;
 
+WiFiClient wifi_client;
+PubSubClient mqtt_client(wifi_client);
+
+void clockout_setup(){
+  /* Dylan Brophy from Upwork, code to create 16 MHz clock output
+  *
+  * This code will print the frequency output when the program starts
+  * so that it is easy to verify the output frequency is correct.
+  *
+  * This code finds the board clock speed using compiler macros; no need
+  * to specify 80 or 40 MHz.
+  */
+  
+  periph_module_enable(PERIPH_LEDC_MODULE);
+  
+  uint32_t bit_width = 2; // 1 - 20 bits
+  uint32_t divider = 320; // Q10.8 fixed point number, 0x100 — 0x3FFFF
+  uint32_t duty_cycle = 1 << (bit_width - 1);
+  
+  float freq_mhz = ((uint64_t) LEDC_APB_CLK_HZ << 8) / (double) divider / (1 << bit_width) / 1000000.0;
+  printf("\nfrequency: %f MHz\n", freq_mhz);
+  
+  ledc_timer_set(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0, divider, bit_width, LEDC_APB_CLK);
+  ledc_timer_rst(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0);
+  ledc_timer_resume(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0);
+  ledc_channel_config_t pwm_pin_cfg = {
+  CLOCKOUT, // chosen GPIO output for clock
+  LEDC_HIGH_SPEED_MODE, // speed mode
+  LEDC_CHANNEL_0, // ledc channel
+  LEDC_INTR_DISABLE, // interrupt type
+  LEDC_TIMER_0, // timer select
+  duty_cycle // duty cycle
+  };
+  ledc_channel_config(&pwm_pin_cfg);
+}
+
+
+time_store sunrise;
+time_store sunset;
+
+long update_timer = millis();
+int update_count = 0;
+int last_dir; // last direction the motors moved
+
+
+void publish_config()
+{
+    const size_t capacity = JSON_OBJECT_SIZE(512);
+
+    DynamicJsonDocument doc(capacity);
+
+    doc["name"] = "blind0";
+    doc["device_class"] = "curtain";
+    doc["state_topic"] = mqtt_state_topic.c_str();
+    doc["command_topic"] = mqtt_set_topic.c_str();
+    doc["state_open"] = "open";
+    doc["state_closed"] = "closed";
+
+    char docbuffer[512];
+    size_t n = serializeJson(doc, docbuffer);
+    DEBUG_STREAM.println(docbuffer);
+    mqtt_client.publish(mqtt_config_topic.c_str(), docbuffer, true);
+};
+
+boolean mqtt_reconnect() {
+  if (mqtt_client.connect(device_name.c_str(), "mqtt_login", "F7ycM93*357S")) {
+    // Once connected, publish an announcement...
+    publish_config();
+    // ... and resubscribe
+    DEBUG_STREAM.println("MQTT Subscribe");
+    mqtt_client.subscribe(mqtt_set_topic.c_str());
+  }
+  return mqtt_client.connected();
+}
+
+void mqtt_callback(char *topic, byte *payload, unsigned int length)
+{
+
+    // for (int i = 0; i < length; i++)
+    // {
+    // Serial.print((char)payload[i]);
+    // };
+    DEBUG_STREAM.println(topic);
+    if (payload[0] == 79) //Letter O for OPEN
+    {
+        DEBUG_STREAM.println("MQTT Move Open");
+        command = MOVE_OPEN;
+        //                client.publish(_mqtt_state_topic.c_str(), "open");
+    }
+    else if (payload[0] == 67) // Letter C for CLOSE
+    {
+      DEBUG_STREAM.println("MQTT Move Close");
+        command = MOVE_CLOSE;
+        //                client.publish(_mqtt_state_topic.c_str(), "closed");
+    }
+}
+
+void setup_mqtt(String mqtt_user, String mqtt_password, String mqtt_server, String mqtt_port, String device_name)
+{
+    DEBUG_STREAM.print("Setup MQTT ");
+    String base_topic = "homeassistant";
+    base_topic = base_topic + "/cover/" + device_name;
+    mqtt_set_topic = base_topic + "/set";
+    mqtt_config_topic = base_topic + "/config";
+    mqtt_state_topic = base_topic + "/state";
+
+    mqtt_client.setServer(mqtt_server.c_str(), mqtt_port.toInt());
+    mqtt_client.setCallback(mqtt_callback);
+};
+
+
+void IndependentTask( void * parameter ) {
+  // the internet should not be used AT ALL in this function!!!!
+while(true) {
+  if (!mqtt_client.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      // Attempt to reconnect
+      if (mqtt_reconnect()) {
+        lastReconnectAttempt = 0;
+      }
+    }
+  } else {
+    // Client connected
+
+    mqtt_client.loop();
+  }
+    // buttons
+
+    // A press sets the command to open or close the track motor.
+    if(!digitalRead(btn1)){
+      command = MOVE_CLOSE;
+    }
+    if(!digitalRead(btn2)){
+      command = MOVE_OPEN;
+    }
+    
+    // commands are sent from other threads so that blocking function calls
+    // (like trackClose(), shaftClose(), trackOpen(), and shaftOpen()) can be
+    // called without causing bizzare hickups in the other threads, namely the main thread
+    // which controls Blynk.
+    
+    if(command!=-1){
+      DEBUG_STREAM.print("Executing command ");
+      DEBUG_STREAM.println(command);
+    }
+    if(command==MOVE_CLOSE){
+      move_close();
+      last_dir=DIR_CLOSE;
+      //DEBUG_STREAM.println("Move Close Executed");
+    }else if(command==MOVE_OPEN){
+      move_open();
+      last_dir=DIR_OPEN;
+    }
+    if(command!=-1)DEBUG_STREAM.println("[ready for next movement]");
+    command = -1;
+    delay(16);
+  }
+}
+
+
+void save_time(int i){
+  DEBUG_STREAM.print("Saving time #");
+  DEBUG_STREAM.println(i);
+  if(times[i].type==0){
+    DEBUG_STREAM.print(" > Active at ");
+    DEBUG_STREAM.print(times[i].hour);
+    DEBUG_STREAM.print(":");
+    DEBUG_STREAM.println(times[i].minute);
+  }else if(times[i].type==1){
+    DEBUG_STREAM.println(" > Active at sunrise.");
+  }else
+    DEBUG_STREAM.println(" > Active at sunset.");
+  // make one string variable to save CPU power and memory
+  String num_=String(i); 
+  preferences.putUInt(("hour_"+num_).c_str(), times[i].hour);
+  preferences.putUInt(("minute_"+num_).c_str(), times[i].minute);
+  preferences.putUInt(("type_"+num_).c_str(), times[i].type);
+  preferences.putLong(("offset_"+num_).c_str(), times[i].offset);
+  preferences.putUChar(("active_"+num_).c_str(), times[i].active);
+  for(int n=0;n<7;n++){
+    preferences.putUChar(("day_sel_"+num_+"_"+n).c_str(), times[i].day_sel[n]);
+  }
+}
+void load_time(int i){
+  // make one string variable to save CPU power and memory
+  String num_=String(i); 
+  DEBUG_STREAM.print("Reloading timer ");
+  DEBUG_STREAM.println(i);
+  times[i].hour=preferences.getUInt(("hour_"+num_).c_str(),12);
+  times[i].minute=preferences.getUInt(("minute_"+num_).c_str(), 0);
+  times[i].type=preferences.getUInt(("type_"+num_).c_str(), 0);
+  times[i].offset=preferences.getLong(("offset_"+num_).c_str(), -25200);
+  // only set the first two as active by default
+  times[i].active=preferences.getUChar(("active_"+num_).c_str(), 0);
+  for(int n=0;n<7;n++){
+    // by default select all days.
+    times[i].day_sel[n]=preferences.getUChar(("day_sel_"+num_+"_"+n).c_str(), 1);
+  }
+}
 //SETUP
 void setup() {
 
@@ -52,7 +266,7 @@ void setup() {
 
   pinMode(btn1,INPUT_PULLUP);
   pinMode(btn2,INPUT_PULLUP);
-
+  lastReconnectAttempt = 0;
   // for storing the times over power cycle
   preferences.begin("auto-curtain", false);
 
@@ -92,54 +306,10 @@ void setup() {
   }
   //configTime(last_timezone_offset, 0, ntpServer, "time.nist.gov", "time.windows.com");
 }
-
-time_store sunrise;
-time_store sunset;
-
-long update_timer = millis();
-int update_count = 0;
-int last_dir; // last direction the motors moved
-
-void IndependentTask( void * parameter ) {
-  // the internet should not be used AT ALL in this function!!!!
-while(true) {
-    // buttons
-
-    // A press sets the command to open or close the track motor.
-    if(!digitalRead(btn1)){
-      command = MOVE_CLOSE;
-    }
-    if(!digitalRead(btn2)){
-      command = MOVE_OPEN;
-    }
-    
-    // commands are sent from other threads so that blocking function calls
-    // (like trackClose(), shaftClose(), trackOpen(), and shaftOpen()) can be
-    // called without causing bizzare hickups in the other threads, namely the main thread
-    // which controls Blynk.
-    
-    if(command!=-1){
-      DEBUG_STREAM.print("Executing command ");
-      DEBUG_STREAM.println(command);
-    }
-    if(command==MOVE_CLOSE){
-      move_close();
-      last_dir=DIR_CLOSE;
-      //DEBUG_STREAM.println("Move Close Executed");
-    }else if(command==MOVE_OPEN){
-      move_open();
-      last_dir=DIR_OPEN;
-    }
-    if(command!=-1)DEBUG_STREAM.println("[ready for next movement]");
-    command = -1;
-    delay(16);
-  }
-}
-
 void loop() {
   // This handles the network and cloud connection
   BlynkProvisioning.run();
-
+  
   // check if the direction changed
   if(preferences.getChar("last_dir",-1)!=last_dir){
     preferences.putChar("last_dir",last_dir);
@@ -284,78 +454,4 @@ void loop() {
     sunset.minute=sunset_min;
     //last_timezone_offset=-1;// force update of timezone and time data
   } 
-}
-
-void save_time(int i){
-  DEBUG_STREAM.print("Saving time #");
-  DEBUG_STREAM.println(i);
-  if(times[i].type==0){
-    DEBUG_STREAM.print(" > Active at ");
-    DEBUG_STREAM.print(times[i].hour);
-    DEBUG_STREAM.print(":");
-    DEBUG_STREAM.println(times[i].minute);
-  }else if(times[i].type==1){
-    DEBUG_STREAM.println(" > Active at sunrise.");
-  }else
-    DEBUG_STREAM.println(" > Active at sunset.");
-  // make one string variable to save CPU power and memory
-  String num_=String(i); 
-  preferences.putUInt(("hour_"+num_).c_str(), times[i].hour);
-  preferences.putUInt(("minute_"+num_).c_str(), times[i].minute);
-  preferences.putUInt(("type_"+num_).c_str(), times[i].type);
-  preferences.putLong(("offset_"+num_).c_str(), times[i].offset);
-  preferences.putUChar(("active_"+num_).c_str(), times[i].active);
-  for(int n=0;n<7;n++){
-    preferences.putUChar(("day_sel_"+num_+"_"+n).c_str(), times[i].day_sel[n]);
-  }
-}
-void load_time(int i){
-  // make one string variable to save CPU power and memory
-  String num_=String(i); 
-  DEBUG_STREAM.print("Reloading timer ");
-  DEBUG_STREAM.println(i);
-  times[i].hour=preferences.getUInt(("hour_"+num_).c_str(),12);
-  times[i].minute=preferences.getUInt(("minute_"+num_).c_str(), 0);
-  times[i].type=preferences.getUInt(("type_"+num_).c_str(), 0);
-  times[i].offset=preferences.getLong(("offset_"+num_).c_str(), -25200);
-  // only set the first two as active by default
-  times[i].active=preferences.getUChar(("active_"+num_).c_str(), 0);
-  for(int n=0;n<7;n++){
-    // by default select all days.
-    times[i].day_sel[n]=preferences.getUChar(("day_sel_"+num_+"_"+n).c_str(), 1);
-  }
-}
-
-
-void clockout_setup(){
-  /* Dylan Brophy from Upwork, code to create 16 MHz clock output
-  *
-  * This code will print the frequency output when the program starts
-  * so that it is easy to verify the output frequency is correct.
-  *
-  * This code finds the board clock speed using compiler macros; no need
-  * to specify 80 or 40 MHz.
-  */
-  
-  periph_module_enable(PERIPH_LEDC_MODULE);
-  
-  uint32_t bit_width = 2; // 1 - 20 bits
-  uint32_t divider = 320; // Q10.8 fixed point number, 0x100 — 0x3FFFF
-  uint32_t duty_cycle = 1 << (bit_width - 1);
-  
-  float freq_mhz = ((uint64_t) LEDC_APB_CLK_HZ << 8) / (double) divider / (1 << bit_width) / 1000000.0;
-  printf("\nfrequency: %f MHz\n", freq_mhz);
-  
-  ledc_timer_set(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0, divider, bit_width, LEDC_APB_CLK);
-  ledc_timer_rst(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0);
-  ledc_timer_resume(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0);
-  ledc_channel_config_t pwm_pin_cfg = {
-  CLOCKOUT, // chosen GPIO output for clock
-  LEDC_HIGH_SPEED_MODE, // speed mode
-  LEDC_CHANNEL_0, // ledc channel
-  LEDC_INTR_DISABLE, // interrupt type
-  LEDC_TIMER_0, // timer select
-  duty_cycle // duty cycle
-  };
-  ledc_channel_config(&pwm_pin_cfg);
 }
